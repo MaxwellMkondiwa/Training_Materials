@@ -1,0 +1,565 @@
+---
+title: "Spatial Probabilistic and Risk Assessment Toolkits: Training Manual Using R"
+author: "Maxwell Mkondiwa"
+format: html
+#embed-resources: true
+self-contained: true
+editor: source
+toc: true
+toc-location: left
+number-sections: true
+---
+
+# Introduction
+
+## Getting survey data
+
+We first use the Wheat version of the 2017/18 Landscape Diagnostic Survey (LDS). The data is accessible here: https://data.cimmyt.org/dataset.xhtml?persistentId=hdl:11529/10548507.
+
+```{r}
+library(rio)
+LDS=read.csv("CSISA_IND_LDS_Whe_2018_Data.csv")
+
+# Select bihar
+LDS=subset(LDS,LDS$A.q102_state=="Bihar")
+table(LDS$A.q103_district)
+
+# Select 
+
+
+
+# Plotting LDS data points 
+library(rgdal)
+library(sp)
+
+LDSsp= SpatialPointsDataFrame(cbind(LDS$O.largestPlotGPS.Longitude,LDS$O.largestPlotGPS.Latitude),data=LDS,proj4string=CRS("+proj=longlat +datum=WGS84"))
+
+plot(LDSsp)
+library(mapview)
+mapview(LDSsp)
+
+
+# Plotting district and state boundaries
+library(geodata)
+#India <- gadm(country="IND", level=1, path="D:/OneDrive/CIMMYT/Papers/Training Materials/Practicals/shp")
+
+India=gadm(country="IND", level=1, path=tempdir())
+plot(India)
+India_Bihar=subset(India,India$NAME_1=="Bihar")
+plot(India_Bihar)
+
+#India_Districts=gadm(country="IND", level=2, path="D:/OneDrive/CIMMYT/Papers/Training Materials/Practicals/shp")
+
+India_Districts=gadm(country="IND", level=2, path=tempdir())
+
+plot(India_Districts)
+India_Districts_Bihar=subset(India_Districts,India_Districts$NAME_1=="Bihar")
+plot(India_Districts_Bihar)
+
+library(sf)
+India_Districts_Bihar=st_as_sf(India_Districts_Bihar)
+India_Bihar=st_as_sf(India_Bihar)
+library(mapview)
+mapview(India_Districts_Bihar,alpha.regions = 0.1)
+```
+
+## Getting geospatial data
+
+```{r}
+# Population density
+population=population(2015,0.5,path=tempdir())
+library(raster)
+pop_raster=raster(population)
+Pop_Bihar_cropped = crop(pop_raster,India_Bihar)
+Pop_Bihar_cropped_m = mask(Pop_Bihar_cropped,India_Bihar)
+
+library(rasterVis)
+levelplot(Pop_Bihar_cropped_m)
+
+# Extract population data for each survey point
+library(sf)
+LDSsf=st_as_sf(LDSsp)
+population_lds=terra::extract(population,vect(LDSsf),fun=mean,df=TRUE)
+
+library(dplyr)
+LDS=bind_cols(LDS,population_lds)
+# # Nitrogen
+# Totalnitrogen=soil_world("nitrogen",depth=5,path="D:/OneDrive/CIMMYT/Papers/Training Materials/Practicals/raster")
+# 
+# Totalnitrogen_raster=raster(Totalnitrogen)
+# Totalnitrogen_Bihar_cropped = crop(Totalnitrogen_raster,India_Bihar)
+# Totalnitrogen_Bihar_cropped_m = mask(Totalnitrogen_Bihar_cropped,India_Bihar)
+# 
+# # Merge to survey data
+# 
+# Totalnitrogen_lds=terra::extract(Totalnitrogen,vect(LDSsf),fun=mean,df=TRUE)
+
+
+```
+
+# Mean-Variance Analysis Toolkit
+
+For this analysis, we use trial data collected under the CSISA-KVK trials.
+
+## Trial Data
+
+```{r}
+CSISA_KVK=import("CSISA_KVK_Wheat_DoS_Trial_Data.xlsx") 
+CSISA_KVK$Latitude=as.numeric(CSISA_KVK$Latitude)
+CSISA_KVK$Longitude=as.numeric(CSISA_KVK$Longitude)
+
+CSISA_KVK=subset(CSISA_KVK,!(is.na(CSISA_KVK$Latitude)))
+CSISA_KVK=subset(CSISA_KVK,!(is.na(CSISA_KVK$Longitude)))
+
+# Descriptive statistics 
+library(modelsummary)
+library(rutilstb)
+variety_yield=tabstat(CSISA_KVK, var=c("GrainYield"),by="Variety")
+variety_yield
+
+colnames(variety_yield)<-paste(colnames(variety_yield),"yields",sep="_")
+
+variety_yield=subset(variety_yield,!(is.na(variety_yield$sd_yields)))
+library(data.table)
+
+# Characteristics frontier
+
+# Mean-standard deviation graph
+library(ggplot2)
+yieldmean_sd=ggplot(variety_yield,aes(sd_yields,mean_yields)) +
+  geom_point(aes(size=count_yields),alpha = I(0.2))+
+ geom_label(aes(label=Variety_yields))
+previous_theme <- theme_set(theme_bw())
+yieldmean_sd
+
+
+
+
+library(NMOF)
+
+v <- variety_yield$mean_yields
+#  c(0.10, 0.15, 0.20, 0.22) ## expected vols
+m <- variety_yield$sd_yields
+#c(0.06, 0.12, 0.09, 0.07) ## expected mean returns
+
+
+const_cor <- function(rho, na) {
+        C <- array(rho, dim = c(na, na))
+        diag(C) <- 1
+          C
+}
+var <- diag(v) %*% const_cor(0.5, length(v)) %*% diag(v)
+
+mvPortfolio(m, var, min.return = 0.08, wmax = 1)
+mvPortfolio(m, var, min.return = 0.10, wmax = 1)
+mvPortfolio(m, var, min.return = 0.12, wmax = 1)
+
+wmin <- 0
+wmax <- 1
+p1 <- mvFrontier(m, var, wmin = wmin, wmax = wmax, n = 50)
+p1
+## with a 'risk-free' asset rf
+rf <- 0.02
+p2 <- mvFrontier(m, var, wmin = wmin, wmax = wmax, n = 50, rf = rf)
+p2
+par(las = 1, bty = "n", tck = 0.001, ps = 8)
+plot(p1$volatility, p1$return, pch = 19, cex = 0.5, type = "o",
+xlab = "Expected volatility",ylab = "Expected return")
+lines(p2$volatility, p2$return, col = grey(0.5))
+abline(v = 0, h = rf)
+
+
+```
+
+# Stochastic Dominance Toolkit
+
+```{r}
+table(CSISA_KVK$Variety)
+# Which variety stochastically dominates the others?
+# Try two of the varieties
+library(ggplot2)
+varietal_ecdf=ggplot(subset(CSISA_KVK,CSISA_KVK$Variety%in%c("HD-2967","HD-2733","PBW-373","HI-1563")), aes(GrainYield, colour = Variety)) +
+  stat_ecdf()
+varietal_ecdf
+
+#Kolmogorov smirnov test for first order stochastic dominance
+
+ks.tests.yield= ks.test(CSISA_KVK$GrainYield,CSISA_KVK$BiomassYield,alternative="greater")
+ks.tests.yield
+```
+
+# Causal Machine Learning Toolkit
+
+For more details, you can read the "grf" manual here: https://grf-labs.github.io/grf/index.html
+
+## Data preparation: sowing date
+
+```{r}
+# Shocks -----------------------------------------------------------------------
+
+# T1: before 10th nov
+CSISA_KVK_T1_T2=subset(CSISA_KVK,CSISA_KVK$SowingSchedule%in%c("T1","T2"))
+
+CSISA_KVK_T1_T2$SowingSchedule_T1[CSISA_KVK_T1_T2$SowingSchedule=="T1"]=1
+CSISA_KVK_T1_T2$SowingSchedule_T1[CSISA_KVK_T1_T2$SowingSchedule=="T2"]=0
+
+```
+
+## First stage: Propensity Score
+
+```{r}
+## Estimate a probit model for irrigation incidence -------------------------------
+
+m_ps_t1_t2 <- glm(SowingSchedule_T1~PreviousCrop+District,family = binomial(link=probit), data = CSISA_KVK_T1_T2)
+
+summary(m_ps_t1_t2 )
+
+CSISA_KVK_T1_T2$ID_t1_t2_model=rownames(CSISA_KVK_T1_T2)
+
+prs_df_t1_t2 <- data.frame(pr_score = predict(m_ps_t1_t2, type = "response"),
+                           ID_t1_t2_model=rownames(m_ps_t1_t2$model),SowingSchedule_T1_dum= m_ps_t1_t2$model$SowingSchedule_T1)
+
+head(prs_df_t1_t2)
+
+sum(prs_df_t1_t2$pr_score< 0.1, na.rm=TRUE) # Check for common support
+sum(prs_df_t1_t2$pr_score> 0.9, na.rm=TRUE)  # see https://doi.org/10.1093/biomet/asn055 #
+
+#prs_df_t1_t2$pr_score[prs_df_t1_t2$pr_score< 0.1]=NA 
+#prs_df_t1_t2$pr_score[prs_df_t1_t2$pr_score> 0.9]=NA 
+
+prs_df_t1_t2_small=subset(prs_df_t1_t2,!(is.na(prs_df_t1_t2$pr_score)))
+
+prs_df_t1_t2_small_CSISA_KVK_T1_T2=merge(prs_df_t1_t2_small,CSISA_KVK_T1_T2,by="ID_t1_t2_model")
+
+# Common support
+library(ggplot2)
+library(tidyverse)
+labs <- paste("Actual t1_t2s:", c("Two t1_t2s", "One t1_t2"))
+
+propensityscore_t1_t2plot=prs_df_t1_t2_small_CSISA_KVK_T1_T2 %>%
+  mutate(SowingSchedule_T1 = ifelse(SowingSchedule_T1_dum == 1, labs[1], labs[2])) %>%
+  ggplot(aes(x = pr_score)) +
+  geom_histogram(color = "white") +
+  facet_wrap(~SowingSchedule_T1) +
+  xlab("Probability of schedule 1") +
+  theme_bw()
+propensityscore_t1_t2plot
+
+
+
+```
+
+## Second stage: Causal Random Forest
+
+```{r}
+Weights_t1_t2=as.vector(prs_df_t1_t2_small_CSISA_KVK_T1_T2$pr_score)
+
+library(grf)
+## Y vars ----------------------------------------------------------------------
+Y_t1_t2 <- as.vector(prs_df_t1_t2_small_CSISA_KVK_T1_T2$GrainYield)
+
+## Regression forest ---------------
+X_t1_t2=subset(prs_df_t1_t2_small_CSISA_KVK_T1_T2, select=c("IrrigationNumber","Split1Urea"))
+
+Y.forest_t1_t2 = regression_forest(X_t1_t2,Y_t1_t2,
+                                        equalize.cluster.weights=FALSE,
+                                        tune.parameters="all",
+                                        seed=12345)
+print(Y.forest_t1_t2)
+varimp_rf_t1_t2 = variable_importance(Y.forest_t1_t2)
+
+## Causal random forest -----------------
+
+X_cf_t1_t2=subset(prs_df_t1_t2_small_CSISA_KVK_T1_T2, select=c("IrrigationNumber","Split1Urea"))
+
+# Fit a regression model to predict treatment variable weeding
+forest.W_t1_t2 <- regression_forest(X =X_cf_t1_t2 , Y = prs_df_t1_t2_small_CSISA_KVK_T1_T2$SowingSchedule_T1, tune.parameters = "all")
+
+# Get out-of-bag predictions for weeding
+W_hat_t1_t2 <- predict(forest.W_t1_t2)$predictions
+
+# Check whether overlap assumption is violated 
+hist(W_hat_t1_t2, xlab = "t1_t2 propensity score",col="steelblue")
+sum(W_hat_t1_t2< 0.1, na.rm=TRUE) # Very good commons support
+sum(W_hat_t1_t2> 0.9, na.rm=TRUE)
+
+# Fit a regression model to predict outcome variable yield
+forest.Y_t1_t2 <- regression_forest(X = X_cf_t1_t2 , Y =prs_df_t1_t2_small_CSISA_KVK_T1_T2$GrainYield,sample.weights=Weights_t1_t2, tune.parameters = "all")
+
+# Get out-of-bag predictions for yield
+Y.hat_t1_t2 <- predict(forest.Y_t1_t2)$predictions
+
+
+W_t1_t2 <- as.vector(prs_df_t1_t2_small_CSISA_KVK_T1_T2$SowingSchedule_T1)
+
+cf_t1_t2 = causal_forest(X=X_cf_t1_t2,Y=Y_t1_t2,W=W_t1_t2,
+                              Y.hat = Y.hat_t1_t2,
+                              W.hat =W_hat_t1_t2, sample.weights=Weights_t1_t2,
+                              equalize.cluster.weights=FALSE,
+                              tune.parameters="all",
+                              seed=12345,
+                              num.trees=500)
+
+cf_t1_t2
+
+ate_t1_t2_all=average_treatment_effect(cf_t1_t2, target.sample = "all") #CATE
+ate_t1_t2_treated=average_treatment_effect(cf_t1_t2, target.sample = "treated") #CATT
+ate_t1_t2_control=average_treatment_effect(cf_t1_t2, target.sample = "control")
+ate_t1_t2_overlap=average_treatment_effect(cf_t1_t2, target.sample = "overlap")
+ate_t1_t2_overlap
+
+
+ate_t1_t2_dt=rbind(ate_t1_t2_all,ate_t1_t2_treated,ate_t1_t2_control)
+write.csv(ate_t1_t2_dt,"tables/ate_t1_t2_dt.csv")
+
+
+cf_varimp = variable_importance(cf_t1_t2)
+print(cf_varimp)
+test_calibration(cf_t1_t2)
+cf_t1_t2_test_calibration=test_calibration(cf_t1_t2)
+
+write.csv(cf_t1_t2_test_calibration,"tables/cf_t1_t2_test_calibration.csv")
+
+tau.hat_t1_t2=predict(cf_t1_t2, target.sample = "all",estimate.variance=TRUE)
+summary(tau.hat_t1_t2$predict)
+
+
+X_cf_t1_t2tau=data.frame(X_cf_t1_t2,tau.hat_t1_t2)
+
+
+```
+
+## Heterogeneity checks
+
+```{r}
+library(ggplot2)
+t1_t2CATEUreasplit1=ggplot(X_cf_t1_t2tau,aes(Split1Urea,predictions))+
+  geom_smooth(method="loess",formula=y~x,col="darkblue")+
+  labs(x="Split urea",y="t1 treatment effect")
+previous_theme <- theme_set(theme_bw())
+t1_t2CATEUreasplit1
+
+
+t1_t2IrrigationNumber=ggplot(X_cf_t1_t2tau,aes(IrrigationNumber,predictions))+
+  geom_smooth(method="loess",formula=y~x,col="darkblue")+
+  labs(x="IrrigationNumber",y="t1_t2 treatment effect")
+previous_theme <- theme_set(theme_bw())
+t1_t2IrrigationNumber
+
+
+
+
+# Export estimation data
+exportdata_cf_tau_t1_t2 <- data.frame(prs_df_t1_t2_small_CSISA_KVK_T1_T2,tau.hat_t1_t2)
+write.csv(exportdata_cf_tau_t1_t2, "Tables/Results_t1_t2_cf.csv")
+
+sum(exportdata_cf_tau_t1_t2$predictions<0, na.rm=TRUE)
+sum(exportdata_cf_tau_t1_t2$predictions==0, na.rm=TRUE)
+sum(exportdata_cf_tau_t1_t2$predictions>0, na.rm=TRUE)
+
+### Mapping CATE results over space ---------
+prs_df_t1_t2_small_CSISA_KVK_T1_T2sp=SpatialPointsDataFrame(cbind(prs_df_t1_t2_small_CSISA_KVK_T1_T2$Longitude,prs_df_t1_t2_small_CSISA_KVK_T1_T2$Latitude),data=prs_df_t1_t2_small_CSISA_KVK_T1_T2,proj4string=CRS("+proj=longlat +datum=WGS84"))
+
+prs_df_t1_t2_small_CSISA_KVK_T1_T2sp$tau.hat_t1_t2_predictions=tau.hat_t1_t2$predictions
+
+library(mapview)
+mapviewOptions(fgb = FALSE)
+tau.hat_t1_t2_predictionsmapview=mapview(prs_df_t1_t2_small_CSISA_KVK_T1_T2sp,zcol="tau.hat_t1_t2_predictions")
+tau.hat_t1_t2_predictionsmapview
+
+
+
+library(rutilstb)
+
+tau.hat_t1_t2_predictions_dist=tabstat(prs_df_t1_t2_small_CSISA_KVK_T1_T2sp@data,var=c("tau.hat_t1_t2_predictions"),by="District")
+
+write.csv(tau.hat_t1_t2_predictions_dist,"Tables/tau.hat_t1_t2_predictions_dist.csv")
+
+tau.hat_t1_t2_predictions_dist_sp=merge(India_Districts_Bihar,tau.hat_t1_t2_predictions_dist,by.x="NAME_2",by.y="District",all.x=FALSE)
+
+library(sf)
+tau.hat_t1_t2_predictions_dist_sf=st_as_sf(tau.hat_t1_t2_predictions_dist_sp)
+
+library(sf)
+library(ggplot2)
+tau.hat_t1_t2_predictions_dist_sfmap=ggplot(tau.hat_t1_t2_predictions_dist_sf)+
+  geom_sf(aes(fill=mean*1000))+
+  geom_sf_label(aes(label=NAME_2),size=3)+
+  scale_fill_viridis_c(alpha=0.9, n.breaks=7)+
+  labs(x="Longitude",y="Latitude")+
+  coord_sf(ylim =c(24,27))+
+  guides(fill=guide_legend(title="CATE of t_1 sowing (kg/ha)"))
+previous_theme <- theme_set(theme_bw())
+tau.hat_t1_t2_predictions_dist_sfmap
+
+
+
+library(grf)
+tau.hat.cf_t1_t2 <- predict(cf_t1_t2, X_cf_t1_t2)$predictions
+tau.hat.cf_t1_t2_RATE <- rank_average_treatment_effect(cf_t1_t2, tau.hat.cf_t1_t2 , target = "AUTOC")
+tau.hat.cf_t1_t2_RATE
+
+
+
+
+
+```
+
+# Inverse distance weighted (IDW) interpolation
+
+```{r}
+# Interpolate the yield benefits -------------------
+library(terra)
+library(stars)
+library(raster)
+
+# Inverse distance approach -----
+library(gstat) # Use gstat's idw routine
+library(sp)    # Used for the spsample function
+library(tmap)
+
+#wgs84.prj=CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+
+#India_State_Boundary_Bihar_wgs84.prj= spTransform(India_State_Boundary_Bihar,wgs84.prj)
+India_Districts_Bihar_sp=as_Spatial(India_Districts_Bihar)
+prs_df_t1_t2_small_CSISA_KVK_T1_T2sp@bbox <- India_Districts_Bihar_sp@bbox 
+
+grd <- as.data.frame(spsample(prs_df_t1_t2_small_CSISA_KVK_T1_T2sp, "regular", n=10000))
+
+names(grd)       <- c("X", "Y")
+coordinates(grd) <- c("X", "Y")
+gridded(grd)     <- TRUE  # Create SpatialPixel object
+fullgrid(grd)    <- TRUE  # Create SpatialGrid object
+plot(grd)
+proj4string(prs_df_t1_t2_small_CSISA_KVK_T1_T2sp) <- proj4string(prs_df_t1_t2_small_CSISA_KVK_T1_T2sp) # Temp fix until new proj env is adopted
+proj4string(grd) <- proj4string(prs_df_t1_t2_small_CSISA_KVK_T1_T2sp)
+
+# Interpolate the grid cells using a power value of 2 (idp=2.0)
+cf.t1_t2.tau.idw <- gstat::idw(tau.hat_t1_t2_predictions ~ 1, prs_df_t1_t2_small_CSISA_KVK_T1_T2sp, newdata=grd, idp=1.0)
+
+# Convert to raster object then clip to Bihar
+cf.t1_t2.tau.idwr       <- raster(cf.t1_t2.tau.idw)
+cf.t1_t2.tau.idwr.m     <- mask(cf.t1_t2.tau.idwr,India_Districts_Bihar_sp)
+
+
+plot(cf.t1_t2.tau.idwr.m, main="Yield gain from t_1 sowing (ton/ha)",xlab="Longitude", ylab="Latitude")
+
+
+
+
+
+```
+
+# Spatial Probabilistic Assessment Toolkit
+
+```{r}
+# library(spBayes)
+# library(MBA)
+# library(fields)
+# 
+# x.res=100
+# y.res=100
+# 
+# ### Bayesian kriging 
+# coords=dplyr::select(prs_df_t1_t2_small_CSISA_KVK_T1_T2,Longitude,Latitude)
+# coords=as.matrix(coords)
+# 
+# 
+# library(spBayes)
+# n.samples=1000
+# cf.t1_t2.sp <- spLM(predictions~1, data=tau.hat_t1_t2,coords=coords,
+#                           starting=list("phi"=3/200,"sigma.sq"=0.08,
+#                                         "tau.sq"=0.02),tuning=list("phi"=0.1, "sigma.sq"=0.05,
+#                                                                    "tau.sq"=0.05),priors=list("phi.Unif"=c(3/1500, 3/50),
+#                                                                                               "sigma.sq.IG"=c(2, 0.08),"tau.sq.IG"=c(2, 0.02)),
+#                           cov.model="exponential",n.samples=n.samples)
+# 
+# 
+# library(coda)
+# burn.in <- floor(0.75*n.samples) 
+# 
+# #cf.t1_t2.sp.r <- spRecover(cf.t1_t2.sp, start=burn.in)
+# 
+# library(terra)
+# library(stars)
+# library(raster)
+# 
+# India_Districts_Bihar_sppoly <- India_Districts_Bihar_sp@polygons[[1]]@Polygons[[1]]@coords 
+# India_Districts_Bihar_sppoly.mat <- as.matrix(India_Districts_Bihar_sppoly)
+# 
+# pred.coords <- SpatialPoints(grd)@coords 
+# pointsInPolyOut <- pointsInPoly(India_Districts_Bihar_sppoly.mat, pred.coords) 
+# pred.coords <- pred.coords[pointsInPolyOut,]
+# 
+# pred.covars <- as.matrix(rep(1, nrow(pred.coords)))
+# 
+# cf.t1_t2.sp.pred <- spPredict(cf.t1_t2.sp, start=burn.in,pred.coords=pred.coords,
+#                                     pred.covars=pred.covars,n.omp.threads=25)
+# 
+# cf.t1_t2.sp.pred.pred.mu = apply(cf.t1_t2.sp.pred$p.y.predictive.samples,1,mean)
+# cf.t1_t2.sp.pred.sd = apply(cf.t1_t2.sp.pred$p.y.predictive.samples,1,sd)
+# 
+# library(MBA)
+# surf <- mba.surf(cbind(coords, tau.hat.cf_t1_t2), no.X=x.res, no.Y=x.res,extend=TRUE, sp=TRUE)$xyz.est
+# surf <- as.image.SpatialGridDataFrame(surf) 
+# z.lim <- range(surf[["z"]], na.rm=TRUE) 
+# pred.grid <- as.data.frame(list(pred.coords,pred.mu=cf.t1_t2.sp.pred.pred.mu,pred.sd=cf.t1_t2.sp.pred.sd))
+# 
+# coordinates(pred.grid) = c("X", "Y") 
+# gridded(pred.grid) <- TRUE 
+# pred.mu.image <- as.image.SpatialGridDataFrame(pred.grid["pred.mu"])
+# pred.sd.image <- as.image.SpatialGridDataFrame(pred.grid["pred.sd"])
+# 
+# library(fields)
+# #image.plot(surf, axes=TRUE, zlim=z.lim, col=tim.colors(25),xaxs = "r", yaxs = "r",main="Yield gain to t1 sowing")
+# plot(India_Districts_Bihar_sp, add=TRUE) 
+# 
+# 
+# writeGDAL(pred.grid["pred.mu"], "figures/t1_t2_tau.pred.mu.image.tif") 
+# writeGDAL(pred.grid["pred.sd"], "figures/t1_t2_tau.pred.sd.image.tif")
+# 
+# library(rasterVis)
+# pred.mu_t1_t2=pred.grid["pred.mu"]
+# pred.mu_t1_t2=raster(pred.mu_t1_t2)
+# pred.mu_t1_t2_plot=levelplot(pred.mu_t1_t2)
+# pred.mu_t1_t2_plot
+# 
+# 
+# 
+# pred.sd_t1_t2=pred.grid["pred.sd"]
+# pred.sd_t1_t2=raster(pred.sd_t1_t2)
+# pred.sd_t1_t2_plot=levelplot(pred.sd_t1_t2)
+# pred.sd_t1_t2_plot
+# 
+# 
+# # predict and probability ------------------------------------------------
+# 
+# 
+# cf.t1_t2.sp.pred.prob0.24t_ha=rowSums(cf.t1_t2.sp.pred$p.y.predictive.samples>0.24)/251
+# 
+# pred.grid <- as.data.frame(list(pred.coords,pred.prob=cf.t1_t2.sp.pred.prob0.24t_ha))
+# 
+# coordinates(pred.grid) = c("X", "Y") 
+# gridded(pred.grid) <- TRUE 
+# 
+# library(rasterVis)
+# 
+# pred.prob_t1_t2=pred.grid["pred.prob"]
+# pred.prob_t1_t2=raster(pred.prob_t1_t2)
+# pred.prob_t1_t2_plot=levelplot(pred.prob_t1_t2)
+# pred.prob_t1_t2_plot
+# 
+# 
+```
+
+# Spatial Risk Assessment Toolkit
+
+Optimization is done in Octave. R is used to produce the graphics and the maps.
+
+```{r}
+
+```
+
+# Conclusion
+
+# References
